@@ -1,0 +1,14 @@
+{
+  "name": "ripley-shadow-archives",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-02-22",
+  "vars": {
+    /** 🛡️ XMR402 CONFIGURATION */
+    // Set to your Mainnet Monero Address
+    // "MONERO_ADDRESS": "8xxxx",
+    "PAYMENT_AMOUNT_XMR": "0.001"
+    // SECURE_SECRET for signing nonces (Should be set in wrangler secrets)
+    // XMR_SERVER_SECRET is required by ripley-guard-ts
+    // "XMR_RPC_URL": "Your wallet rpc/json_rpc" // Use the real wallet RPC for verification
+  }
+}
