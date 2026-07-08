@@ -14,9 +14,26 @@ export interface Env {
   PAYMENT_AMOUNT_XMR: string;
   XMR_RPC_URL: string;
   XMR_SERVER_SECRET: string;
+  // Optional Cloudflare Access service-token creds for a gated wallet-RPC.
+  // Set BOTH as Worker secrets when XMR_RPC_URL sits behind Cloudflare Access.
+  CF_ACCESS_CLIENT_ID?: string;
+  CF_ACCESS_CLIENT_SECRET?: string;
 }
 
 const app = new Hono<{ Bindings: Env }>()
+
+/** Build the wallet-RPC auth headers. When XMR_RPC_URL is behind Cloudflare Access,
+ *  a service token (created in the Access dashboard, added to the RPC's policy) lets
+ *  the Worker through. Returns {} when unset — a no-op for a public/unguarded RPC. */
+function rpcHeaders(env: Env): Record<string, string> {
+  if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
+    return {
+      'CF-Access-Client-Id': env.CF_ACCESS_CLIENT_ID,
+      'CF-Access-Client-Secret': env.CF_ACCESS_CLIENT_SECRET
+    };
+  }
+  return {};
+}
 
 // 🌐 1. GLOBAL CORS
 app.use('*', cors({
@@ -32,7 +49,8 @@ app.use('/intel', async (c, next) => {
     nodeRpcUrl: c.env.XMR_RPC_URL,
     walletAddress: c.env.MONERO_ADDRESS,
     amountPiconero: Math.floor(parseFloat(c.env.PAYMENT_AMOUNT_XMR) * 1e12),
-    serverSecret: c.env.XMR_SERVER_SECRET
+    serverSecret: c.env.XMR_SERVER_SECRET,
+    rpcHeaders: rpcHeaders(c.env)
   })
   return await guard(c, next)
 })
@@ -60,21 +78,31 @@ app.get('/relay', async (c) => {
   const gate = ripleyGuardWS({
     nodeRpcUrl: c.env.XMR_RPC_URL,
     walletAddress: c.env.MONERO_ADDRESS,
-    serverSecret: c.env.XMR_SERVER_SECRET
+    serverSecret: c.env.XMR_SERVER_SECRET,
+    rpcHeaders: rpcHeaders(c.env)
   })
 
   const amount = Math.floor(parseFloat(c.env.PAYMENT_AMOUNT_XMR) * 1e12)
 
   server.accept()
   server.addEventListener('message', async (event: { data: string }) => {
-    // One-liner authorization using the v2.0 adapter
-    await gate.handle(server, event.data, 'cf-worker-node', amount, (intent) => {
-      server.send(JSON.stringify({
-        type: 'ACCESS_GRANTED',
-        intent,
-        secret: "GHOST_PROTOCOL_ACTIVE_V2"
-      }))
-    })
+    try {
+      // One-liner authorization using the v2.0 adapter
+      await gate.handle(server, event.data, 'cf-worker-node', amount, (intent) => {
+        server.send(JSON.stringify({
+          type: 'ACCESS_GRANTED',
+          intent,
+          secret: "GHOST_PROTOCOL_ACTIVE_V2"
+        }))
+        // Close our side cleanly once access is granted. In a plain Worker a socket left
+        // open after the handshake is flagged as a hung request and force-canceled, which
+        // surfaces to the client as an abnormal close. The exchange is complete here.
+        try { server.close(1000, 'granted') } catch { /* already closing */ }
+      })
+    } catch (e: any) {
+      // Defensive: never let a handler throw hang the socket — surface it as an ERROR frame.
+      try { server.send(JSON.stringify({ type: 'ERROR', message: `HANDLER_ERROR: ${e?.message || e}` })) } catch { /* socket gone */ }
+    }
   })
 
   // @ts-ignore - Cloudflare Response extension
